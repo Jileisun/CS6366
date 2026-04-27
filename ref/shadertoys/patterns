@@ -1,0 +1,40 @@
+// Cole Peterson
+
+#define R iResolution.xy
+#define m ( iMouse.xy - .5*R ) / R.y
+#define ss(a, b, t) smoothstep(a, b, t)
+
+void mainImage( out vec4 f, in vec2 u ){
+    float t = iTime*.25 - 1.5;
+    
+    vec2 uv = vec2( u - .5*R ) / R.y;
+    uv += vec2(t, t*.2 - .4);
+    
+    if(iMouse.z > 0.)
+        uv += m*5.;
+    
+    uv = (uv + vec2(-uv.y,uv.x) ) / 1.41;
+    uv = fract(uv * .35) - .5;
+    uv = abs(uv);
+    
+    vec2 v = vec2(cos(.09), sin(.09));
+    float dp = dot(uv, v);
+    uv -= v*max(0., dp)*2.;
+    
+    float w = 0.;
+    for(float i = 0.; i < 27.;i++){
+        uv *= 1.23;
+        uv = abs(uv);
+    	uv -= 0.36;
+    	uv -= v*min(0., dot(uv, v))*2.;
+        uv.y += cos(uv.x*45.)*.007;
+        w += dot(uv, uv);
+    }
+    
+    float n = (w*12. + dp*15.);
+    vec3 col = 1. - (.6 + .6*cos(vec3(.45, 0.6, .81) * n + vec3(-.6, .3, -.6)));
+    
+    col *= max(ss(.0, .11, abs(uv.y*.4)), .8);
+    col = pow(col * 1.2, vec3(1.6));
+    f = vec4(1.-exp(-col), 1.);
+}
