@@ -22,6 +22,14 @@ function ensureParameterPanelStyles() {
       font-family: "Avenir Next", "Segoe UI", sans-serif;
     }
 
+    .scene-parameter-panel--compact {
+      width: auto;
+      min-width: 0;
+      max-width: min(280px, calc(100vw - 32px));
+      padding: 8px 10px;
+      border-radius: 12px;
+    }
+
     .scene-parameter-panel h2 {
       margin: 0;
       font-size: 18px;
@@ -42,9 +50,20 @@ function ensureParameterPanelStyles() {
       margin-top: 14px;
     }
 
+    .scene-parameter-panel--compact .scene-parameter-list {
+      gap: 0;
+      margin-top: 0;
+    }
+
     .scene-parameter-row {
       display: grid;
       gap: 6px;
+    }
+
+    .scene-parameter-panel--compact .scene-parameter-row {
+      grid-template-columns: auto minmax(140px, 1fr);
+      align-items: center;
+      gap: 10px;
     }
 
     .scene-parameter-head {
@@ -61,6 +80,10 @@ function ensureParameterPanelStyles() {
       font-variant-numeric: tabular-nums;
     }
 
+    .scene-parameter-panel--compact .scene-parameter-head {
+      display: contents;
+    }
+
     .scene-parameter-slider,
     .scene-parameter-select {
       width: 100%;
@@ -75,6 +98,11 @@ function ensureParameterPanelStyles() {
       background: rgba(255, 255, 255, 0.03);
       color: rgba(242, 238, 229, 0.88);
       font: inherit;
+    }
+
+    .scene-parameter-panel--compact .scene-parameter-select {
+      padding: 6px 28px 6px 8px;
+      min-width: 0;
     }
 
     .scene-parameter-actions {
@@ -119,6 +147,9 @@ export function mountParameterPanel(config) {
     onUpdate,
     onReset,
     resetLabel = "Reset",
+    compact = false,
+    showReset = true,
+    showValue = true,
   } = config;
 
   ensureParameterPanelStyles();
@@ -127,14 +158,21 @@ export function mountParameterPanel(config) {
   if (existing) existing.remove();
 
   const panel = document.createElement("section");
-  panel.className = "scene-parameter-panel";
-  panel.innerHTML = `
-    <h2>${title}</h2>
-    <p>${description}</p>
-    <div class="scene-parameter-list"></div>
+  panel.className = compact ? "scene-parameter-panel scene-parameter-panel--compact" : "scene-parameter-panel";
+
+  const titleMarkup = title ? `<h2>${title}</h2>` : "";
+  const descriptionMarkup = description ? `<p>${description}</p>` : "";
+  const resetMarkup = showReset ? `
     <div class="scene-parameter-actions">
       <button type="button" class="scene-parameter-reset">${resetLabel}</button>
     </div>
+  ` : "";
+
+  panel.innerHTML = `
+    ${titleMarkup}
+    ${descriptionMarkup}
+    <div class="scene-parameter-list"></div>
+    ${resetMarkup}
   `;
 
   const list = panel.querySelector(".scene-parameter-list");
@@ -150,11 +188,15 @@ export function mountParameterPanel(config) {
     const titleNode = document.createElement("span");
     titleNode.textContent = spec.label;
 
-    const valueNode = document.createElement("span");
-    valueNode.className = "scene-parameter-value";
-    valueNode.textContent = formatSpecValue(spec, initialValues[spec.key]);
-
-    head.append(titleNode, valueNode);
+    let valueNode = null;
+    if (showValue) {
+      valueNode = document.createElement("span");
+      valueNode.className = "scene-parameter-value";
+      valueNode.textContent = formatSpecValue(spec, initialValues[spec.key]);
+      head.append(titleNode, valueNode);
+    } else {
+      head.append(titleNode);
+    }
     row.appendChild(head);
 
     if (spec.type === "select") {
@@ -171,7 +213,7 @@ export function mountParameterPanel(config) {
 
       select.addEventListener("input", () => {
         const nextValue = Number(select.value);
-        valueNode.textContent = formatSpecValue(spec, nextValue);
+        if (valueNode) valueNode.textContent = formatSpecValue(spec, nextValue);
         onUpdate(spec.key, nextValue);
       });
 
@@ -188,7 +230,7 @@ export function mountParameterPanel(config) {
 
       slider.addEventListener("input", () => {
         const nextValue = Number(slider.value);
-        valueNode.textContent = formatSpecValue(spec, nextValue);
+        if (valueNode) valueNode.textContent = formatSpecValue(spec, nextValue);
         onUpdate(spec.key, nextValue);
       });
 
@@ -199,7 +241,9 @@ export function mountParameterPanel(config) {
     list.appendChild(row);
   }
 
-  panel.querySelector(".scene-parameter-reset").addEventListener("click", onReset);
+  if (showReset) {
+    panel.querySelector(".scene-parameter-reset").addEventListener("click", onReset);
+  }
   document.body.appendChild(panel);
 
   return {
@@ -210,7 +254,9 @@ export function mountParameterPanel(config) {
         if (!controls) continue;
 
         controls.input.value = String(nextValues[spec.key]);
-        controls.value.textContent = formatSpecValue(spec, nextValues[spec.key]);
+        if (controls.value) {
+          controls.value.textContent = formatSpecValue(spec, nextValues[spec.key]);
+        }
       }
     },
   };

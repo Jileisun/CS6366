@@ -1,199 +1,266 @@
-// ============================================================
-// scene_mandelbulb.fs.glsl
-// Isolated Mandelbulb render styled after iquilezles' city demo:
-// warm directional sun + cool sky dome, exp extinction fog along
-// the primary ray, and stratified volumetric god-rays.
-// NOT a path tracer — single-bounce approximation that runs
-// realtime and tracks OrbitControls. All ecosystem layers are
-// intentionally bypassed so we can see the bulb in isolation.
-// Must be concatenated after common.glsl and mandelbulb.glsl.
-// ============================================================
+precision highp float;
 
-// ---------- scene: domain-repeated + warped Mandelbulb field ----------
-// Two ideas borrowed from city:
-//   (1) `mod()` domain repetition — one bulb per tile.
-//   (2) domain warp — sinusoidal offset applied to the query point
-//       before the fractal is evaluated, so the bulb silhouettes are
-//       organically deformed instead of perfectly symmetric.
-// Each tile also gets a deterministic rotation / Y offset / scale
-// via hash11(cell). Scale is capped below 1.0 so a bulb never bleeds
-// into the next tile (that would break the single-tile fold).
-#define TILE_PERIOD 3.0
+uniform vec3 iResolution;
+uniform float iTime;
+uniform float uZoom;
+uniform float uMbPower;
+uniform float uMbIterations;
+uniform float uMbBailout;
+uniform float uMbScale;
+uniform float uMbSpinSpeed;
+uniform float uMbPhaseStrength;
+uniform float uMbPhaseSpeed;
+uniform float uMbYaw;
+uniform float uMbPitch;
 
-// Two-octave warp — g(p) in `f(p + g(p))`. Different swizzles per
-// octave so the offset mixes axes the way city's recursive warp does.
-vec3 domainWarp(vec3 p, float seed) {
-  vec3 w  = 0.22 * sin(p.yzx * 1.60 + vec3(0.0, 2.1, 4.3) + seed * 3.17);
-  w      += 0.08 * sin(p.zxy * 3.70 + vec3(1.5, 3.2, 0.9) + seed * 7.31);
-  return w;
-}
+varying vec2 vUv;
 
-vec3 scene(vec3 p) {
-  // (1a) gentle GLOBAL warp before the fold — tile grid becomes wavy
-  p += 0.10 * sin(p.zxy * 0.35 + vec3(0.0, 1.3, 2.7));
+// Created by evilryu
+// License Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported License.
+// Adapted here as a standalone Mandelbulb scene with a fungal / spore palette.
 
-  vec2 cell = floor((p.xz + TILE_PERIOD * 0.5) / TILE_PERIOD);
-  float seed = dot(cell, vec2(7.131, 31.73));
+float pixel_size = 0.0;
+const int MAX_MB_ITER = 12;
 
-  // (2) fold XZ into a tile centered at the origin
+void ry(inout vec3 p, float a) {
+  float c = cos(a);
+  float s = sin(a);
   vec3 q = p;
-  q.xz = mod(p.xz + TILE_PERIOD * 0.5, TILE_PERIOD) - TILE_PERIOD * 0.5;
-
-  // per-tile vertical offset so the field isn't a flat row
-  float yOff = (hash11(seed + 2.31) - 0.5) * 0.8;
-  q.y -= yOff;
-
-  // per-tile rotation around Y so each bulb faces a different way
-  float rot = hash11(seed + 1.17) * 6.2832;
-  float cr = cos(rot), sr = sin(rot);
-  q.xz = mat2(cr, -sr, sr, cr) * q.xz;
-
-  // per-tile scale in [0.55, 0.95] — keeps radius < tile-half (1.5)
-  float scl = 0.55 + hash11(seed + 3.71) * 0.40;
-
-  // (1b) PER-TILE warp applied in the bulb's local (scaled) frame
-  vec3 sq = q / scl;
-  sq += domainWarp(sq, seed);
-
-  vec2 mb = mbDE(sq);
-  // Scale restores world-space distance; the 0.75 safety factor
-  // compensates for the Lipschitz stretch introduced by the warp so
-  // the raymarch doesn't overstep through bent surface sheets.
-  return vec3(mb.x * scl * 0.75, mb.y, 0.0);
+  p.x = c * q.x + s * q.z;
+  p.z = -s * q.x + c * q.z;
 }
 
-float map(vec3 p) {
-  return scene(p).x;
+/*
+z = r*(sin(theta)cos(phi) + i cos(theta) + j sin(theta)sin(phi)
+
+zn+1 = zn^8 + c
+
+z^8 = r^8 * (sin(8*theta)*cos(8*phi) + i cos(8*theta) + j sin(8*theta)*sin(8*theta)
+
+zn+1' = 8 * zn^7 * zn' + 1
+*/
+
+vec3 mb(vec3 p) {
+  p.xyz = p.xzy;
+  vec3 z = p;
+  float power = uMbPower;
+  float r = 0.0;
+  float dr = 1.0;
+  float t0 = 1.0;
+
+  for (int i = 0; i < MAX_MB_ITER; ++i) {
+    if (float(i) >= floor(uMbIterations + 0.5)) break;
+    r = length(z);
+    if (r > uMbBailout) break;
+
+    float safeR = max(r, 1.0e-5);
+    float theta = atan(z.y, z.x);
+    float phi = asin(clamp(z.z / safeR, -1.0, 1.0));
+    phi += uMbPhaseStrength * iTime * uMbPhaseSpeed;
+
+    dr = pow(safeR, power - 1.0) * dr * power + 1.0;
+
+    float zr = pow(safeR, power);
+    theta *= power;
+    phi *= power;
+
+    z = zr * vec3(
+      cos(theta) * cos(phi),
+      sin(theta) * cos(phi),
+      sin(phi)
+    ) + p;
+
+    t0 = min(t0, zr);
+  }
+
+  float safeR = max(r, 1.0e-5);
+  return vec3(0.5 * log(safeR) * safeR / dr, t0, 0.0);
 }
 
-// ---------- normal ----------
-vec3 nor(vec3 p) {
-  vec2 e = vec2(0.0015, 0.0);
+vec3 mapScene(vec3 p) {
+  float scale = max(uMbScale, 0.1);
+  ry(p, iTime * uMbSpinSpeed);
+  vec3 res = mb(p / scale);
+  res.x *= scale;
+  return res;
+}
+
+float softshadow(vec3 ro, vec3 rd, float k) {
+  float shadow = 1.0;
+  float t = 0.01;
+
+  for (int i = 0; i < 50; ++i) {
+    float h = mapScene(ro + rd * t).x;
+    if (h < 0.001) return 0.02;
+    shadow = min(shadow, k * h / t);
+    t += clamp(h, 0.01, 2.0);
+  }
+
+  return shadow;
+}
+
+vec3 calcNormal(vec3 pos) {
+  vec3 eps = vec3(0.001, 0.0, 0.0);
   return normalize(vec3(
-    map(p + e.xyy) - map(p - e.xyy),
-    map(p + e.yxy) - map(p - e.yxy),
-    map(p + e.yyx) - map(p - e.yyx)
+    mapScene(pos + eps.xyy).x - mapScene(pos - eps.xyy).x,
+    mapScene(pos + eps.yxy).x - mapScene(pos - eps.yxy).x,
+    mapScene(pos + eps.yyx).x - mapScene(pos - eps.yyx).x
   ));
 }
 
-// ---------- surface shadow ----------
-float softshadow(vec3 ro, vec3 rd, float mint, float maxt, float k) {
-  float res = 1.0;
-  float t = mint;
-  for (int i = 0; i < MAX_SHADOW_STEPS; i++) {
-    float h = map(ro + rd * t);
-    res = min(res, k * h / t);
-    t += clamp(h, 0.02, 0.25);
-    if (res < 0.002 || t > maxt) break;
-  }
-  return clamp(res, 0.0, 1.0);
-}
+vec3 intersect(vec3 ro, vec3 rd) {
+  float t = 1.0;
+  float resT = 0.0;
+  vec3 resC = vec3(0.0);
+  float maxError = 1000.0;
+  float pd = 100.0;
+  float os = 0.0;
+  float error = 1000.0;
 
-// ---------- cheap binary shadow for volumetric sampling ----------
-// Reach ~8 units (≈ 2.5 tiles at TILE_PERIOD=3.0) so god-rays can
-// be occluded by neighboring bulbs, not just the one in the current tile.
-float shadowVol(vec3 ro, vec3 rd) {
-  float t = 0.02;
-  for (int i = 0; i < 22; i++) {
-    float h = map(ro + rd * t);
-    if (h < 0.002) return 0.0;
-    t += clamp(h, 0.04, 0.5);
-    if (t > 8.0) break;
-  }
-  return 1.0;
-}
-
-// ---------- primary raymarch ----------
-vec4 intersect(vec3 ro, vec3 rd) {
-  float t = 0.02;
-  float trap = 0.0;
-  for (int i = 0; i < MAX_MARCH_STEPS; i++) {
-    vec3 sc = scene(ro + rd * t);
-    trap = sc.y;
-    if (sc.x < SURF_EPS * (1.0 + 0.06 * t)) {
-      return vec4(t, trap, 0.0, 1.0);
+  for (int i = 0; i < 48; i++) {
+    if (error < pixel_size * 0.5 || t > 20.0) {
+      continue;
     }
-    t += sc.x * STEP_SAFETY;
-    if (t > MAX_DIST) break;
+
+    vec3 c = mapScene(ro + rd * t);
+    float d = c.x;
+    float step;
+
+    if (d > os) {
+      os = 0.4 * d * d / pd;
+      step = d + os;
+      pd = d;
+    } else {
+      step = -os;
+      os = 0.0;
+      pd = 100.0;
+      d = 1.0;
+    }
+
+    error = d / t;
+
+    if (error < maxError) {
+      maxError = error;
+      resT = t;
+      resC = c;
+    }
+
+    t += step;
   }
-  return vec4(t, trap, 0.0, 0.0);
+
+  if (t > 20.0) resT = -1.0;
+  return vec3(resT, resC.y, resC.z);
 }
 
-// ---------- lighting (city palette, scaled down for ACES) ----------
-const vec3 SUN_DIR = normalize(vec3(0.2, 1.0, -0.5));
-const vec3 SUN_COL = vec3(1.2, 0.9, 0.7) * 2.8;
-const vec3 SKY_COL = vec3(0.3, 0.5, 0.7) * 0.95;
-
-vec3 renderBackground(vec3 rd) {
-  return mix(0.05 * vec3(0.9, 1.0, 1.0), SKY_COL, smoothstep(0.1, 0.25, rd.y));
+float hash21(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
 }
 
-vec3 tonemapACES(vec3 x) {
-  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+vec3 fungalPalette(float trap, vec3 p, vec3 n) {
+  float colony = 0.5 + 0.5 * sin(p.x * 7.0 + p.y * 6.5 + p.z * 5.0);
+  float pore = 0.5 + 0.5 * sin(p.x * 18.0 - p.z * 12.0 + p.y * 8.0);
+
+  vec3 voidBlack = vec3(0.015, 0.006, 0.022);
+  vec3 bruisePurple = vec3(0.170, 0.030, 0.220);
+  vec3 arterialRed = vec3(0.470, 0.050, 0.100);
+  vec3 magentaBloom = vec3(0.760, 0.180, 0.520);
+  vec3 paleGlow = vec3(0.960, 0.620, 0.860);
+
+  vec3 albedo = mix(voidBlack, bruisePurple, smoothstep(0.02, 0.18, trap));
+  albedo = mix(albedo, arterialRed, smoothstep(0.14, 0.42, trap + colony * 0.18));
+  albedo = mix(albedo, magentaBloom, smoothstep(0.36, 0.76, trap + pore * 0.10));
+
+  albedo *= 0.84 + 0.16 * colony;
+  albedo += paleGlow * pow(pore, 8.0) * 0.16;
+  albedo += vec3(0.240, 0.020, 0.090) * pow(1.0 - trap, 2.4) * 0.25;
+
+  float rim = pow(clamp(1.0 - max(dot(n, normalize(vec3(0.0, 1.0, 0.3))), 0.0), 0.0, 1.0), 1.8);
+  albedo += vec3(0.300, 0.030, 0.160) * rim * 0.18;
+
+  return albedo;
+}
+
+vec3 renderBackground(vec2 fragCoord, vec2 q, vec2 uv, vec3 rd, vec3 ro) {
+  vec3 hazeLow = vec3(0.010, 0.000, 0.018);
+  vec3 hazeHigh = vec3(0.120, 0.015, 0.090);
+  vec3 bg = mix(hazeLow, hazeHigh, clamp(0.5 + 0.5 * rd.y, 0.0, 1.0));
+  bg += exp(uv.y - 2.0) * vec3(0.180, 0.015, 0.060);
+
+  float halo = clamp(dot(normalize(-ro), rd), 0.0, 1.0);
+  bg += vec3(0.950, 0.180, 0.520) * pow(halo, 17.0) * 0.40;
+
+  vec2 sporeCell = floor(fragCoord * 0.45 + vec2(iTime * 4.0, -iTime * 1.5));
+  float mote = hash21(sporeCell);
+  float flicker = 0.55 + 0.45 * sin(iTime * 3.0 + mote * 6.2831853);
+  float spore = smoothstep(0.992, 1.0, mote) * flicker;
+  bg += vec3(0.950, 0.250, 0.620) * spore * (0.08 + 0.16 * (1.0 - q.y));
+
+  return bg;
+}
+
+void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+  vec2 q = fragCoord.xy / iResolution.xy;
+  vec2 uv = -1.0 + 2.0 * q;
+  uv.x *= iResolution.x / iResolution.y;
+
+  pixel_size = 1.0 / (iResolution.x * 3.0);
+
+  vec3 ta = vec3(0.0, 0.0, 0.0);
+  float radius = mix(3.6, 1.75, clamp(uZoom, 0.0, 1.0));
+  float cp = cos(uMbPitch);
+  vec3 ro = radius * vec3(
+    sin(uMbYaw) * cp,
+    sin(uMbPitch),
+    cos(uMbYaw) * cp
+  );
+
+  vec3 cf = normalize(ta - ro);
+  vec3 cs = normalize(cross(cf, vec3(0.0, 1.0, 0.0)));
+  vec3 cu = normalize(cross(cs, cf));
+  vec3 rd = normalize(uv.x * cs + uv.y * cu + 3.0 * cf);
+
+  vec3 sundir = normalize(vec3(0.18, 0.72, 0.62));
+  vec3 sun = vec3(1.300, 0.320, 0.620);
+  vec3 skycolor = vec3(0.380, 0.100, 0.320);
+
+  vec3 bg = renderBackground(fragCoord, q, uv, rd, ro);
+  vec3 col = bg;
+
+  vec3 res = intersect(ro, rd);
+
+  if (res.x > 0.0) {
+    vec3 p = ro + res.x * rd;
+    vec3 n = calcNormal(p);
+    float shadow = softshadow(p, sundir, 10.0);
+
+    float dif = max(0.0, dot(n, sundir));
+    float sky = 0.6 + 0.4 * max(0.0, dot(n, vec3(0.0, 1.0, 0.0)));
+    float bac = max(0.3 + 0.7 * dot(vec3(-sundir.x, -1.0, -sundir.z), n), 0.0);
+    float spe = max(0.0, pow(clamp(dot(sundir, reflect(rd, n)), 0.0, 1.0), 10.0));
+    float rim = pow(clamp(1.0 + dot(rd, n), 0.0, 1.0), 2.0);
+
+    vec3 lin = 3.9 * sun * dif * shadow;
+    lin += 0.8 * bac * vec3(0.210, 0.030, 0.070);
+    lin += 1.0 * sky * skycolor * shadow;
+    lin += 2.6 * spe * vec3(1.000, 0.520, 0.820) * shadow;
+    lin += vec3(0.700, 0.120, 0.440) * rim * 0.40;
+
+    float trap = pow(clamp(res.y, 0.0, 1.0), 0.42);
+    vec3 albedo = fungalPalette(trap, p, n);
+
+    col = lin * albedo;
+    col = mix(col, bg, 1.0 - exp(-0.0012 * res.x * res.x));
+  }
+
+  // post
+  col = pow(clamp(col, 0.0, 1.0), vec3(0.45));
+  col = col * 0.72 + 0.28 * col * col * (3.0 - 2.0 * col);
+  col = mix(col, vec3(dot(col, vec3(0.33))), -0.18);
+  col *= 0.58 + 0.42 * pow(16.0 * q.x * q.y * (1.0 - q.x) * (1.0 - q.y), 0.7);
+
+  fragColor = vec4(col, 1.0);
 }
 
 void main() {
-  vec2 fragCoord = gl_FragCoord.xy;
-  vec2 uv = (fragCoord - 0.5 * uResolution) / uResolution.y;
-
-  vec3 ro = uCamPos;
-  vec3 ta = uCamTarget;
-
-  vec3 ww = normalize(ta - ro);
-  vec3 uu = normalize(cross(ww, vec3(0.0, 1.0, 0.0)));
-  vec3 vv = normalize(cross(uu, ww));
-  vec3 rd = normalize(uu * uv.x + vv * uv.y + ww * 1.7);
-
-  vec3 bg = renderBackground(rd);
-  vec4 hit = intersect(ro, rd);
-  vec3 col;
-  float fdis;
-
-  if (hit.w > 0.5) {
-    vec3 pos = ro + rd * hit.x;
-    vec3 n = nor(pos);
-    float trap = hit.y;
-
-    // fractal-driven surface tint (orbit trap -> cool/warm blend)
-    vec3 baseA = vec3(0.18, 0.16, 0.24);
-    vec3 baseB = vec3(0.95, 0.55, 0.30);
-    vec3 surface = mix(baseA, baseB, exp(-3.6 * trap));
-
-    float diff = max(0.0, dot(n, SUN_DIR));
-    float sha  = (diff > 0.001) ? softshadow(pos + n * 0.01, SUN_DIR, 0.02, 10.0, 12.0) : 0.0;
-    float hemi = clamp(0.5 + 0.5 * n.y, 0.0, 1.0);
-    vec3 halfDir = normalize(SUN_DIR - rd);
-    float spec = pow(max(dot(n, halfDir), 0.0), 48.0);
-
-    vec3 direct  = SUN_COL * diff * sha;
-    vec3 ambient = SKY_COL * hemi * 0.6;
-
-    col  = surface * (direct + ambient);
-    col += SUN_COL * spec * sha * 0.15;
-
-    fdis = hit.x;
-    col *= exp(-0.22 * fdis); // exponential extinction along primary ray
-  } else {
-    col = bg;
-    fdis = MAX_DIST * 0.4; // cap volumetric reach on misses
-  }
-
-  // ---- volumetric god-rays: 5 stratified samples along primary ray ----
-  float jitter = fract(sin(dot(fragCoord, vec2(12.9898, 78.233))) * 43758.5453);
-  float acc = 0.0;
-  for (int i = 0; i < 5; i++) {
-    float u = (float(i) + jitter) / 5.0;
-    vec3 pv = ro + rd * (fdis * u);
-    acc += 0.2 * shadowVol(pv, SUN_DIR);
-  }
-  col += vec3(0.12) * pow(acc, 2.0) * SUN_COL * 0.45;
-
-  // vignette + tonemap + gamma
-  vec2 frameUv = (vUv * 2.0 - 1.0) * vec2(uResolution.x / max(uResolution.y, 1.0), 1.0);
-  float vignette = 1.0 - smoothstep(0.85, 1.7, length(frameUv));
-  col *= vignette;
-  col = tonemapACES(col);
-  col = pow(col, vec3(1.0 / 2.2));
-
-  gl_FragColor = vec4(col, 1.0);
+  mainImage(gl_FragColor, gl_FragCoord.xy);
 }

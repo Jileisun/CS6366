@@ -4,9 +4,7 @@ import { createQuad, loadShaderSource } from "./setup.js";
 const PARAMETER_SPECS = [
   { key: "power", label: "Power", min: 2.0, max: 12.0, step: 0.1, format: (value) => value.toFixed(1) },
   { key: "iterations", label: "Iterations", min: 3, max: 12, step: 1, format: (value) => String(Math.round(value)) },
-  { key: "bailout", label: "Bailout", min: 1.5, max: 8.0, step: 0.1, format: (value) => value.toFixed(1) },
   { key: "scale", label: "Scale", min: 0.55, max: 1.8, step: 0.01, format: (value) => value.toFixed(2) },
-  { key: "spinSpeed", label: "Spin", min: 0.0, max: 1.0, step: 0.01, format: (value) => value.toFixed(2) },
   { key: "phaseStrength", label: "Phase", min: 0.0, max: 1.2, step: 0.01, format: (value) => value.toFixed(2) },
   { key: "phaseSpeed", label: "Phase Speed", min: 0.0, max: 1.0, step: 0.01, format: (value) => value.toFixed(2) },
 ];
@@ -112,7 +110,7 @@ function mountParameterPanel(initialParams, onUpdate, onReset) {
   panel.className = "mandelbulb-parameters";
   panel.innerHTML = `
     <h2>Fractal Parameters</h2>
-    <p>These sliders update the standalone Mandelbulb in real time. The main scene does not load this shader.</p>
+    <p>These values drive the standalone Mandelbulb. Power and phase auto-cycle in real time, while bailout and spin stay fixed.</p>
     <div class="mandelbulb-parameter-list"></div>
     <div class="mandelbulb-parameter-actions">
       <button type="button" class="mandelbulb-parameter-reset">Reset</button>
@@ -176,7 +174,7 @@ function mountParameterPanel(initialParams, onUpdate, onReset) {
 async function buildMandelbulbShaders() {
   const [vertexShader, fragmentShader] = await Promise.all([
     loadShaderSource("./glsl/fullscreen.vs.glsl"),
-    loadShaderSource("./glsl/scene_mandelbulb_spore.fs.glsl"),
+    loadShaderSource("./glsl/scene_mandelbulb.fs.glsl"),
   ]);
 
   return {
@@ -195,8 +193,8 @@ export async function runMandelbulbScene(sceneConfig) {
   const scene = new THREE.Scene();
   const quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const clock = new THREE.Clock();
-  const defaultParams = { ...sceneConfig.mandelbulbParams };
-  const params = { ...defaultParams };
+  const params = { ...sceneConfig.mandelbulbParams };
+  const defaultParams = { ...params };
 
   const uniforms = {
     iResolution: { value: new THREE.Vector3(1, 1, 1) },
@@ -288,7 +286,7 @@ export async function runMandelbulbScene(sceneConfig) {
   const parameterPanel = mountParameterPanel(
     params,
     (key, value) => {
-      params[key] = value;
+      params[key] = key === "iterations" ? Math.round(value) : value;
       syncUniforms();
     },
     () => {
@@ -306,6 +304,7 @@ export async function runMandelbulbScene(sceneConfig) {
   });
 
   scene.add(createQuad(material));
+  syncUniforms();
   updateViewAngles();
   updateResolution();
 

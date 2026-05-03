@@ -1,3 +1,3 @@
 import { bootScene } from "./js/startScene.js";
 
-bootScene("spore");
+bootScene("mandelbulb");

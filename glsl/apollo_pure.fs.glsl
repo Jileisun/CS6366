@@ -1,6 +1,6 @@
 // apollo_pure.fs.glsl
 // Reference Apollonian fractal shader, adapted from the provided reference.
-// Only change: iChannel0 wood texture replaced with a procedural equivalent.
+// This variant uses a bright tree-like triplanar surface.
 
 precision highp float;
 
@@ -99,20 +99,83 @@ float calcAO( in vec3 pos, in vec3 nor )
     return clamp( ao*16.0, 0.0, 1.0 );
 }
 
-// ---- procedural replacement for iChannel0 wood texture --------------
-vec3 proceduralWood( in vec3 pos, in vec3 nor )
+// ---- procedural plant texture ---------------------------------------
+float hash12( in vec2 p )
 {
-    vec3 w = nor*nor;
-    w /= (w.x + w.y + w.z + 1e-4);
-    // triplanar rings
-    float rx = sin(length(pos.yz)*5.3 + pos.x*1.1);
-    float ry = sin(length(pos.xz)*5.3 + pos.y*1.1);
-    float rz = sin(length(pos.xy)*5.3 + pos.z*1.1);
-    float v  = 0.5 + 0.4*(w.x*rx + w.y*ry + w.z*rz);
-    return mix( vec3(0.54, 0.37, 0.19), vec3(0.88, 0.70, 0.44), v );
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
 }
 
-// ---- render (identical to reference, texture call replaced) ---------
+float noise2( in vec2 p )
+{
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f*f*(3.0 - 2.0*f);
+
+    return mix(
+        mix(hash12(i + vec2(0.0, 0.0)), hash12(i + vec2(1.0, 0.0)), u.x),
+        mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x),
+        u.y
+    );
+}
+
+float fbm2( in vec2 p )
+{
+    float f = 0.0;
+    float a = 0.5;
+    mat2 m = mat2(1.6, 1.2, -1.2, 1.6);
+    for( int i=0; i<5; i++ )
+    {
+        f += a * noise2(p);
+        p = m * p;
+        a *= 0.55;
+    }
+    return f;
+}
+
+vec3 plantTexture2D( in vec2 uv, in float band, in float upMask )
+{
+    vec2 p = uv * 2.4;
+    float barkMask = fbm2(p * 1.4);
+    float leafMask = fbm2(p * 2.8 + vec2(4.0, 1.7));
+    float blossom = fbm2(p * 7.0 + vec2(2.3, 6.1));
+    float ribs = abs(sin(p.x * 2.8 + 2.2 * fbm2(p * 0.9)) * cos(p.y * 2.0 - 1.8 * fbm2(p * 1.4)));
+    float vein = 1.0 - smoothstep(0.18, 0.72, ribs);
+    float crest = 0.5 + 0.5*cos(6.2831*band + 2.0*barkMask);
+
+    vec3 barkDark = vec3(0.24, 0.16, 0.08);
+    vec3 barkWarm = vec3(0.42, 0.28, 0.12);
+    vec3 leafShade = vec3(0.18, 0.36, 0.12);
+    vec3 leafMid = vec3(0.40, 0.66, 0.22);
+    vec3 leafSun = vec3(0.72, 0.88, 0.34);
+
+    vec3 base = mix(barkDark, barkWarm, smoothstep(0.12, 0.62, barkMask));
+    base = mix(base, leafShade, smoothstep(0.34, 0.78, leafMask) * (0.40 + 0.60 * upMask));
+    base = mix(base, leafMid, vein * (0.30 + 0.70 * upMask));
+    base = mix(base, leafSun, smoothstep(0.74, 0.96, blossom) * smoothstep(0.32, 1.0, upMask));
+    base *= mix(0.92, 1.30, crest);
+    return base;
+}
+
+vec3 plantTextureBox( in vec3 pos, in vec3 nor, in float band )
+{
+    vec3 w = abs(nor);
+    w = w*w*w;
+    w /= (w.x + w.y + w.z + 1e-4);
+
+    float upX = smoothstep(-0.15, 0.65, nor.x);
+    float upY = smoothstep(-0.15, 0.65, nor.y);
+    float upZ = smoothstep(-0.15, 0.65, nor.z);
+
+    vec3 txX = plantTexture2D(pos.yz, band, upX);
+    vec3 txY = plantTexture2D(pos.zx, band + 0.17, upY);
+    vec3 txZ = plantTexture2D(pos.xy, band + 0.31, upZ);
+
+    return (w.x * txX + w.y * txY + w.z * txZ) / (w.x + w.y + w.z);
+}
+
+// ---- render ----------------------------------------------------------
 vec3 render( in vec3 ro, in vec3 rd )
 {
     vec3 col = vec3(0.0);
@@ -125,13 +188,15 @@ vec3 render( in vec3 ro, in vec3 rd )
         float fre = clamp(1.0+dot(rd,nor), 0.0, 1.0);
         float occ = pow( clamp(res.z*2.0,0.0,1.0), 1.2 );
               occ = 1.5*(0.1+0.9*occ)*calcAO(pos,nor);
-        vec3  lin = vec3(1.0,1.0,1.5)*(2.0+fre*fre*vec3(1.8,1.0,1.0))*occ*(1.0-0.5*abs(nor.y));
+        vec3  lin = vec3(1.05,1.08,1.30)*(2.35+fre*fre*vec3(1.9,1.1,1.0))*occ*(1.0-0.4*abs(nor.y));
 
-        col  = 0.5 + 0.5*cos( 6.2831*res.y + vec3(0.0,1.0,2.0) );
-        col *= proceduralWood( pos, nor );
-        col  = col*lin;
-        col += 0.6*pow(1.0-fre,32.0)*occ*vec3(0.5,1.0,1.5);
-        col *= exp(-0.3*t);
+        vec3 bandCol = 0.5 + 0.5*cos( 6.2831*res.y + vec3(0.0,1.0,2.0) );
+        vec3 plantCol = plantTextureBox( pos, nor, res.y );
+        vec3 baseCol = mix(0.22 * bandCol + vec3(0.10, 0.08, 0.04), plantCol, 0.88);
+        col  = baseCol * lin;
+        col += 0.36*pow(1.0-fre,24.0)*occ*vec3(0.78,0.96,0.54);
+        col += 0.08 * vec3(0.24, 0.34, 0.12) * occ;
+        col *= exp(-0.22*t);
     }
     col.z += 0.01;
     return sqrt(col * uApolloGain);
@@ -140,17 +205,31 @@ vec3 render( in vec3 ro, in vec3 rd )
 // ---- main (Shadertoy mainImage → Three.js main) ---------------------
 void main()
 {
-    float time = iTime*0.15*uApolloOrbitSpeed + 0.005*iMouse.x;
+    float mouseActive = step(0.5, dot(iMouse.xy, iMouse.xy));
+    vec2 mouse = mix(0.5 * iResolution.xy, iMouse.xy, mouseActive);
+    vec2 mouseN = mouse / max(iResolution.xy, vec2(1.0));
+
+    float autoOrbit = 0.85 * iTime * uApolloOrbitSpeed;
+    float dragOrbit = (mouseN.x - 0.5) * 2.4;
+    float orbit = autoOrbit + dragOrbit;
+
+    float autoLift = 0.22 * cos(0.31 * iTime * max(uApolloOrbitSpeed, 0.25));
+    float dragLift = (0.5 - mouseN.y) * 0.85;
+    float lift = autoLift + dragLift;
 
     vec2 fragCoord = vUv * iResolution.xy;
 
     vec3 ro = vec3(
-        uApolloOrbitRadius*cos(0.1+.33*time),
-        0.5+0.20*cos(0.37*time),
-        uApolloOrbitRadius*cos(0.5+0.35*time)
+        uApolloOrbitRadius*cos(0.1 + 0.33*orbit),
+        0.55 + 0.28*lift,
+        uApolloOrbitRadius*cos(0.5 + 0.35*orbit)
     );
-    vec3 ta = vec3( 1.9*cos(1.2+.41*time), 0.5+0.10*cos(0.27*time), 1.9*cos(2.0+0.38*time) );
-    float roll = 0.2*cos(0.1*time);
+    vec3 ta = vec3(
+        1.9*cos(1.2 + 0.41*orbit),
+        0.5 + 0.18*lift,
+        1.9*cos(2.0 + 0.38*orbit)
+    );
+    float roll = 0.0;
 
     vec3 cw = normalize(ta-ro);
     vec3 cp = vec3(sin(roll), cos(roll), 0.0);

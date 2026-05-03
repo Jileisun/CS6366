@@ -26,6 +26,7 @@ export async function runApolloScene(sceneConfig) {
   const clock  = new THREE.Clock();
   const params = { ...sceneConfig.apolloParams };
   const defaultParams = { ...params };
+  let isDragging = false;
 
   const uniforms = {
     iResolution: { value: new THREE.Vector3(1, 1, 1) },
@@ -57,10 +58,38 @@ export async function runApolloScene(sceneConfig) {
   }
   window.addEventListener("resize", resize);
 
-  renderer.domElement.addEventListener("pointermove", (e) => {
-    uniforms.iMouse.value.x = e.clientX;
-    uniforms.iMouse.value.y = e.clientY;
-  });
+  renderer.domElement.style.touchAction = "none";
+
+  function onPointerMove(event) {
+    if (!isDragging) return;
+    uniforms.iMouse.value.x = event.clientX;
+    uniforms.iMouse.value.y = event.clientY;
+  }
+
+  function onPointerDown(event) {
+    if (event.button !== 0) return;
+    isDragging = true;
+    uniforms.iMouse.value.x = event.clientX;
+    uniforms.iMouse.value.y = event.clientY;
+    uniforms.iMouse.value.z = 1.0;
+    renderer.domElement.setPointerCapture(event.pointerId);
+  }
+
+  function releasePointer(event) {
+    isDragging = false;
+    uniforms.iMouse.value.z = 0.0;
+    if (event) renderer.domElement.releasePointerCapture(event.pointerId);
+  }
+
+  function onWheel(event) {
+    event.preventDefault();
+    params.orbitRadius = THREE.MathUtils.clamp(
+      params.orbitRadius * Math.exp(event.deltaY * 0.0012),
+      1.4,
+      6.0,
+    );
+    applyParams();
+  }
 
   const [vertexShader, fragmentShader] = await Promise.all([
     loadShaderSource("./glsl/fullscreen.vs.glsl"),
@@ -72,13 +101,19 @@ export async function runApolloScene(sceneConfig) {
   applyParams();
   resize();
 
+  renderer.domElement.addEventListener("pointermove", onPointerMove);
+  renderer.domElement.addEventListener("pointerdown", onPointerDown);
+  renderer.domElement.addEventListener("pointerup", releasePointer);
+  renderer.domElement.addEventListener("pointercancel", releasePointer);
+  renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
+
   let panelHandle = null;
   if (sceneConfig.parameterPanel) {
     panelHandle = mountParameterPanel({
       ...sceneConfig.parameterPanel,
       initialValues: params,
       onUpdate(key, value) {
-        params[key] = value;
+        params[key] = key === "iterations" ? Math.round(value) : value;
         applyParams();
       },
       onReset() {
